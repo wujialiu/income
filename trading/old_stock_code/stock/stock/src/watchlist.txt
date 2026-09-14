@@ -1,0 +1,6 @@
+vips :short
+fnsr: long
+platinum: long
+nvda: long
+wb: long
+

@@ -1,0 +1,9 @@
+Run started: 2026-01-26 03:54:36
+Tickers fetched (raw): 101
+Tickers after dedup: 101
+Duplicates removed: 0
+Successful tickers: 101
+Failed tickers: 0
+Full CSV saved: qqq_yahoo_summary_full.csv (rows=101, cols=188)
+Clean CSV saved: qqq_yahoo_summary_clean.csv (rows=101, cols=41)
+Run finished: 2026-01-26 03:55:43
