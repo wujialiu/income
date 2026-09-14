@@ -8,6 +8,15 @@ The active code is in the repository root and `silver/`. Treat `old_stock_code/`
 
 ## Main Commands
 
+Create and activate the repository-root `.venv` and install `../requirements.txt`
+as described in `../README.md`. Run the following commands from `trading/`.
+
+Refresh only the ticker lists:
+
+```bash
+python3 fetch_data.py --tickers-only
+```
+
 Run the data pipeline:
 
 ```bash
@@ -77,12 +86,16 @@ The code expects these Python packages:
 - `yfinance`
 - `plotly`
 - `lxml`
+- `truststore`
 
-There is currently no `requirements.txt` or lockfile, so verify imports locally before assuming the environment is reproducible.
+Direct dependencies are pinned in `../requirements.txt`. Python 3.11+ is required;
+Python 3.13 is the tested environment. Use the repository-root `.venv`.
 
 ## Working Notes
 
 - The pipeline relies on live Wikipedia and Yahoo Finance data; constituent lists and OHLCV output can change over time.
+- Wikipedia requests verify TLS with the system trust store. Fetch failures exit
+  before writing any ticker files. Never bypass certificate verification.
 - `tickers.txt` is generated through set-based dedupe, so duplicates across index sources are collapsed.
 - `extra.txt` is an input source and supports whitespace or comma-separated tickers plus `#` comments.
 - Avoid hand-editing generated ticker files unless the user asks for a one-off data change.

@@ -11,11 +11,15 @@ Fixes:
 
 import argparse
 from datetime import date, datetime, timedelta
+from io import BytesIO
 import logging
 from pathlib import Path
+import ssl
 from typing import Dict, Iterable, List, Optional, Set
+from urllib.request import Request, urlopen
 
 import pandas as pd
+import truststore
 import yfinance as yf
 
 
@@ -34,8 +38,8 @@ DEFAULT_HISTORY_DAYS = 120
 INTERVAL = "1d"
 WIKIPEDIA_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 WIKIPEDIA_MIDCAP400_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies"
-WIKIPEDIA_NASDAQ100_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
-WIKIPEDIA_DOW30_URL = "https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average"
+WIKIPEDIA_NASDAQ100_URL = "https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies"
+WIKIPEDIA_DOW30_URL = "https://en.wikipedia.org/wiki/List_of_Dow_Jones_Industrial_Average_companies"
 
 CUSTOM_TICKERS: List[str] = [
 ]
@@ -57,20 +61,7 @@ def normalize_ticker(symbol: str) -> str:
 
 
 def fetch_sp500_tickers() -> List[str]:
-    try:
-        tables = pd.read_html(
-            WIKIPEDIA_SP500_URL,
-            flavor="lxml",
-            storage_options={"User-Agent": "Mozilla/5.0"},
-        )
-        df = tables[0]
-        symbols = df["Symbol"].tolist()
-        normalized = [normalize_ticker(symbol) for symbol in symbols]
-        logging.info("Fetched %d S&P 500 tickers from Wikipedia.", len(normalized))
-        return normalized
-    except Exception as e:
-        logging.error("Failed to fetch S&P 500 tickers: %s", e)
-        return []
+    return fetch_index_tickers(WIKIPEDIA_SP500_URL, "S&P 500")
 
 
 def extract_symbols_from_tables(tables: List[pd.DataFrame]) -> List[str]:
@@ -84,17 +75,18 @@ def extract_symbols_from_tables(tables: List[pd.DataFrame]) -> List[str]:
 
 def fetch_index_tickers(url: str, index_name: str) -> List[str]:
     try:
-        tables = pd.read_html(
-            url,
-            flavor="lxml",
-            storage_options={"User-Agent": "Mozilla/5.0"},
-        )
+        # Use OS-managed roots (including corporate CAs) with TLS verification.
+        context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(request, context=context, timeout=30) as response:
+            tables = pd.read_html(BytesIO(response.read()), flavor="lxml")
         symbols = extract_symbols_from_tables(tables)
+        if not symbols:
+            raise ValueError("The constituent table is empty.")
         logging.info("Fetched %d %s tickers from Wikipedia.", len(symbols), index_name)
         return symbols
     except Exception as e:
-        logging.error("Failed to fetch %s tickers: %s", index_name, e)
-        return []
+        raise RuntimeError(f"Failed to fetch {index_name} tickers: {e}") from e
 
 
 def fetch_nasdaq100_tickers() -> List[str]:
@@ -149,6 +141,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "trade_date",
+        nargs="?",
         type=parse_trade_date,
         help="Cutoff date in YYYY-MM-DD. Data will be fetched before this trading day.",
     )
@@ -168,7 +161,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fetch market caps and include the Capital volume column. Disabled by default.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--tickers-only",
+        action="store_true",
+        help="Refresh the index lists and tickers.txt without downloading OHLC data.",
+    )
+    args = parser.parse_args()
+    if args.trade_date is None and not args.tickers_only:
+        parser.error("trade_date is required unless --tickers-only is used")
+    return args
 
 
 def build_output_filename(filename: str, trade_date: Optional[date]) -> str:
@@ -438,10 +439,16 @@ def main() -> None:
     args = parse_args()
     logging.info("Starting OHLC pipeline...")
 
-    sp500 = fetch_sp500_tickers()
-    nasdaq100 = fetch_nasdaq100_tickers()
-    midcap400 = fetch_midcap400_tickers()
-    dow30 = fetch_dow30_tickers()
+    # Fetch every source before writing anything: a failed source must not
+    # replace a valid universe with empty or incomplete lists.
+    try:
+        sp500 = fetch_sp500_tickers()
+        nasdaq100 = fetch_nasdaq100_tickers()
+        midcap400 = fetch_midcap400_tickers()
+        dow30 = fetch_dow30_tickers()
+    except RuntimeError as exc:
+        logging.error("%s Existing ticker files were not changed.", exc)
+        raise SystemExit(1) from exc
     extra_tickers = read_ticker_list(EXTRA_LIST_FILE)
     custom_tickers = build_ticker_universe(CUSTOM_TICKERS, extra_tickers)
     write_ticker_list(SP500_LIST_FILE, sp500)
@@ -451,6 +458,8 @@ def main() -> None:
     tickers = build_ticker_universe(custom_tickers, sp500, nasdaq100, midcap400, dow30)
     write_ticker_list(TICKER_UNIVERSE_FILE, tickers)
     logging.info("Built ticker universe with %d unique symbols.", len(tickers))
+    if args.tickers_only:
+        return
     market_caps = fetch_market_caps(tickers) if args.market_caps else None
 
     output_filename = build_output_filename(args.output, args.trade_date)
